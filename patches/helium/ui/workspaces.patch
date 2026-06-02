@@ -1,0 +1,782 @@
+--- a/chrome/common/pref_names.h
++++ b/chrome/common/pref_names.h
+@@ -840,6 +840,23 @@ inline constexpr char kHeliumVerticalRightAligned[] =
+ inline constexpr char kHeliumVerticalRightAligned[] =
+     "helium.browser.vertical_right_aligned";
+ 
++// Dictionary storing Helium workspaces. Each workspace entry contains a stable
++// id, display name, optional container id, pinned tab ids, pinned folders, and
++// ephemeral tab ids.
++inline constexpr char kHeliumWorkspaces[] = "helium.workspaces";
++
++// String id of the active Helium workspace for the browser window.
++inline constexpr char kHeliumActiveWorkspace[] = "helium.workspaces.active";
++
++// Boolean pref enabling the Arc/Zen-style workspace sidebar.
++inline constexpr char kHeliumWorkspaceSidebar[] =
++    "helium.workspaces.sidebar_enabled";
++
++// Boolean pref. When enabled, tabs that are not pinned into the active
++// workspace are treated as ephemeral and can be cleared from the sidebar.
++inline constexpr char kHeliumWorkspaceEphemeralTabs[] =
++    "helium.workspaces.ephemeral_tabs";
++
+ // A boolean pref set to true if a Home button to open the Home pages should be
+ // visible on the toolbar.
+ inline constexpr char kShowHomeButton[] = "browser.show_home_button";
+--- a/chrome/browser/ui/browser_ui_prefs.cc
++++ b/chrome/browser/ui/browser_ui_prefs.cc
+@@ -148,6 +148,10 @@ void RegisterBrowserUserPrefs(user_prefs
+   registry->RegisterBooleanPref(prefs::kShowExtensionsButton, true);
+   registry->RegisterBooleanPref(prefs::kShowMenuButton, true);
+   registry->RegisterBooleanPref(prefs::kShowMediaButton, true);
++  registry->RegisterDictionaryPref(prefs::kHeliumWorkspaces);
++  registry->RegisterStringPref(prefs::kHeliumActiveWorkspace, "default");
++  registry->RegisterBooleanPref(prefs::kHeliumWorkspaceSidebar, true);
++  registry->RegisterBooleanPref(prefs::kHeliumWorkspaceEphemeralTabs, true);
+ 
+   registry->RegisterInt64Pref(prefs::kDefaultBrowserInfobarLastDeclined, 0);
+   registry->RegisterBooleanPref(prefs::kWebAppCreateOnDesktop, true);
+--- a/chrome/browser/extensions/api/settings_private/prefs_util.cc
++++ b/chrome/browser/extensions/api/settings_private/prefs_util.cc
+@@ -212,5 +212,11 @@ const PrefsUtil::TypedPrefMap& PrefsUtil
+   (*s_allowlist)[::prefs::kHeliumVerticalRightAligned] =
+       settings_api::PrefType::kBoolean;
++  (*s_allowlist)[::prefs::kHeliumWorkspaceSidebar] =
++      settings_api::PrefType::kBoolean;
++  (*s_allowlist)[::prefs::kHeliumWorkspaceEphemeralTabs] =
++      settings_api::PrefType::kBoolean;
++  (*s_allowlist)[::prefs::kHeliumActiveWorkspace] =
++      settings_api::PrefType::kString;
+ 
+   // Miscellaneous
+   (*s_allowlist)[::embedder_support::kAlternateErrorPagesEnabled] =
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -59,6 +59,8 @@ static_library("ui") {
+     "enterprise_startup_dialog.h",
+     "helium/helium_layout_state_controller.cc",
+     "helium/helium_layout_state_controller.h",
++    "helium/workspaces/helium_workspace_controller.cc",
++    "helium/workspaces/helium_workspace_controller.h",
+     "idle_bubble.h",
+     "incognito_allowed_url.cc",
+     "incognito_allowed_url.h",
+--- /dev/null
++++ b/chrome/browser/ui/helium/workspaces/helium_workspace_controller.h
+@@ -0,0 +1,106 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_HELIUM_WORKSPACES_HELIUM_WORKSPACE_CONTROLLER_H_
++#define CHROME_BROWSER_UI_HELIUM_WORKSPACES_HELIUM_WORKSPACE_CONTROLLER_H_
++
++#include <string>
++#include <vector>
++
++#include "base/callback_list.h"
++#include "base/memory/raw_ptr.h"
++#include "components/prefs/pref_change_registrar.h"
++#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
++
++class BrowserWindowInterface;
++class PrefService;
++class TabStripModel;
++
++namespace tabs {
++class TabInterface;
++}
++
++namespace helium {
++
++struct WorkspacePinnedFolder {
++  std::string id;
++  std::string title;
++  std::vector<std::string> tab_ids;
++};
++
++struct WorkspaceState {
++  std::string id;
++  std::string title;
++  std::string container_id;
++  std::vector<std::string> pinned_tab_ids;
++  std::vector<WorkspacePinnedFolder> pinned_folders;
++  std::vector<std::string> ephemeral_tab_ids;
++};
++
++class HeliumWorkspaceController {
++ public:
++  DECLARE_USER_DATA(HeliumWorkspaceController);
++
++  explicit HeliumWorkspaceController(BrowserWindowInterface* browser_window,
++                                     PrefService* pref_service);
++  HeliumWorkspaceController(const HeliumWorkspaceController&) = delete;
++  HeliumWorkspaceController& operator=(const HeliumWorkspaceController&) =
++      delete;
++  ~HeliumWorkspaceController();
++
++  static HeliumWorkspaceController* From(BrowserWindowInterface* browser_window);
++
++  std::vector<WorkspaceState> GetWorkspaces() const;
++  WorkspaceState GetActiveWorkspace() const;
++  const std::string& active_workspace_id() const {
++    return active_workspace_id_;
++  }
++
++  void AddWorkspace(const std::string& title,
++                    const std::string& container_id = std::string());
++  void RemoveWorkspace(const std::string& workspace_id);
++  void RenameWorkspace(const std::string& workspace_id,
++                       const std::string& title);
++  void SetActiveWorkspace(const std::string& workspace_id);
++  void AssignContainer(const std::string& workspace_id,
++                       const std::string& container_id);
++
++  void PinTab(tabs::TabInterface* tab);
++  void UnpinTab(tabs::TabInterface* tab);
++  void AddPinnedFolder(const std::string& title);
++  void MovePinnedTabToFolder(tabs::TabInterface* tab,
++                             const std::string& folder_id);
++  void RemovePinnedFolder(const std::string& folder_id);
++
++  bool IsTabPinned(tabs::TabInterface* tab) const;
++  bool IsTabEphemeral(tabs::TabInterface* tab) const;
++  void TrackEphemeralTab(tabs::TabInterface* tab);
++  void ClearEphemeralTabs();
++
++  using StateChangedCallback =
++      base::RepeatingCallback<void(HeliumWorkspaceController*)>;
++  base::CallbackListSubscription RegisterOnStateChanged(
++      StateChangedCallback callback);
++
++ private:
++  void EnsureDefaultWorkspace();
++  void LoadActiveWorkspace();
++  void PersistWorkspaces(const std::vector<WorkspaceState>& workspaces);
++  void NotifyStateChanged();
++  std::string EnsureTabId(tabs::TabInterface* tab) const;
++  TabStripModel* tab_strip_model() const;
++
++  raw_ptr<BrowserWindowInterface> browser_window_;
++  raw_ptr<PrefService> pref_service_;
++  PrefChangeRegistrar pref_change_registrar_;
++  std::string active_workspace_id_;
++  base::RepeatingCallbackList<void(HeliumWorkspaceController*)>
++      on_state_changed_callback_list_;
++  ui::ScopedUnownedUserData<HeliumWorkspaceController>
++      scoped_unowned_user_data_;
++};
++
++}  // namespace helium
++
++#endif  // CHROME_BROWSER_UI_HELIUM_WORKSPACES_HELIUM_WORKSPACE_CONTROLLER_H_
+--- /dev/null
++++ b/chrome/browser/ui/helium/workspaces/helium_workspace_controller.cc
+@@ -0,0 +1,390 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/helium/workspaces/helium_workspace_controller.h"
++
++#include <algorithm>
++#include <string_view>
++
++#include "base/uuid.h"
++#include "base/values.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/common/pref_names.h"
++#include "components/prefs/pref_service.h"
++
++namespace helium {
++
++namespace {
++
++constexpr char kIdKey[] = "id";
++constexpr char kTitleKey[] = "title";
++constexpr char kContainerIdKey[] = "container_id";
++constexpr char kPinnedTabsKey[] = "pinned_tabs";
++constexpr char kPinnedFoldersKey[] = "pinned_folders";
++constexpr char kEphemeralTabsKey[] = "ephemeral_tabs";
++constexpr char kDefaultWorkspaceId[] = "default";
++constexpr char kDefaultWorkspaceTitle[] = "Personal";
++
++std::vector<std::string> ListToStrings(const base::Value::List* list) {
++  std::vector<std::string> strings;
++  if (!list) {
++    return strings;
++  }
++  for (const auto& value : *list) {
++    if (value.is_string()) {
++      strings.push_back(value.GetString());
++    }
++  }
++  return strings;
++}
++
++base::Value::List StringsToList(const std::vector<std::string>& strings) {
++  base::Value::List list;
++  for (const auto& value : strings) {
++    list.Append(value);
++  }
++  return list;
++}
++
++WorkspacePinnedFolder FolderFromDict(const base::Value::Dict& dict) {
++  WorkspacePinnedFolder folder;
++  folder.id = dict.FindString(kIdKey).value_or(std::string());
++  folder.title = dict.FindString(kTitleKey).value_or(std::string());
++  folder.tab_ids = ListToStrings(dict.FindList(kPinnedTabsKey));
++  return folder;
++}
++
++base::Value::Dict FolderToDict(const WorkspacePinnedFolder& folder) {
++  base::Value::Dict dict;
++  dict.Set(kIdKey, folder.id);
++  dict.Set(kTitleKey, folder.title);
++  dict.Set(kPinnedTabsKey, StringsToList(folder.tab_ids));
++  return dict;
++}
++
++WorkspaceState WorkspaceFromDict(const base::Value::Dict& dict) {
++  WorkspaceState workspace;
++  workspace.id = dict.FindString(kIdKey).value_or(std::string());
++  workspace.title = dict.FindString(kTitleKey).value_or(std::string());
++  workspace.container_id =
++      dict.FindString(kContainerIdKey).value_or(std::string());
++  workspace.pinned_tab_ids = ListToStrings(dict.FindList(kPinnedTabsKey));
++  workspace.ephemeral_tab_ids = ListToStrings(dict.FindList(kEphemeralTabsKey));
++  if (const auto* folders = dict.FindList(kPinnedFoldersKey)) {
++    for (const auto& folder : *folders) {
++      if (folder.is_dict()) {
++        workspace.pinned_folders.push_back(FolderFromDict(folder.GetDict()));
++      }
++    }
++  }
++  return workspace;
++}
++
++base::Value::Dict WorkspaceToDict(const WorkspaceState& workspace) {
++  base::Value::Dict dict;
++  dict.Set(kIdKey, workspace.id);
++  dict.Set(kTitleKey, workspace.title);
++  dict.Set(kContainerIdKey, workspace.container_id);
++  dict.Set(kPinnedTabsKey, StringsToList(workspace.pinned_tab_ids));
++  dict.Set(kEphemeralTabsKey, StringsToList(workspace.ephemeral_tab_ids));
++  base::Value::List folders;
++  for (const auto& folder : workspace.pinned_folders) {
++    folders.Append(FolderToDict(folder));
++  }
++  dict.Set(kPinnedFoldersKey, std::move(folders));
++  return dict;
++}
++
++bool Contains(const std::vector<std::string>& values, std::string_view id) {
++  return std::ranges::find(values, id) != values.end();
++}
++
++void Erase(std::vector<std::string>& values, std::string_view id) {
++  std::erase(values, id);
++}
++
++}  // namespace
++
++DEFINE_USER_DATA(HeliumWorkspaceController);
++
++HeliumWorkspaceController::HeliumWorkspaceController(
++    BrowserWindowInterface* browser_window,
++    PrefService* pref_service)
++    : browser_window_(browser_window),
++      pref_service_(pref_service),
++      scoped_unowned_user_data_(browser_window->GetUnownedUserDataHost(),
++                                *this) {
++  pref_change_registrar_.Init(pref_service_);
++  pref_change_registrar_.Add(
++      prefs::kHeliumWorkspaces,
++      base::BindRepeating(&HeliumWorkspaceController::NotifyStateChanged,
++                          base::Unretained(this)));
++  pref_change_registrar_.Add(
++      prefs::kHeliumActiveWorkspace,
++      base::BindRepeating(&HeliumWorkspaceController::LoadActiveWorkspace,
++                          base::Unretained(this)));
++  EnsureDefaultWorkspace();
++  LoadActiveWorkspace();
++}
++
++HeliumWorkspaceController::~HeliumWorkspaceController() = default;
++
++HeliumWorkspaceController* HeliumWorkspaceController::From(
++    BrowserWindowInterface* browser_window) {
++  return Get(browser_window->GetUnownedUserDataHost());
++}
++
++std::vector<WorkspaceState> HeliumWorkspaceController::GetWorkspaces() const {
++  std::vector<WorkspaceState> workspaces;
++  const base::Value::Dict& dict =
++      pref_service_->GetDict(prefs::kHeliumWorkspaces);
++  for (const auto [id, value] : dict) {
++    if (value.is_dict()) {
++      WorkspaceState workspace = WorkspaceFromDict(value.GetDict());
++      if (workspace.id.empty()) {
++        workspace.id = id;
++      }
++      workspaces.push_back(std::move(workspace));
++    }
++  }
++  std::ranges::sort(workspaces, {}, &WorkspaceState::title);
++  return workspaces;
++}
++
++WorkspaceState HeliumWorkspaceController::GetActiveWorkspace() const {
++  for (auto& workspace : GetWorkspaces()) {
++    if (workspace.id == active_workspace_id_) {
++      return workspace;
++    }
++  }
++  return WorkspaceState{kDefaultWorkspaceId, kDefaultWorkspaceTitle};
++}
++
++void HeliumWorkspaceController::AddWorkspace(const std::string& title,
++                                             const std::string& container_id) {
++  auto workspaces = GetWorkspaces();
++  WorkspaceState workspace;
++  workspace.id = base::Uuid::GenerateRandomV4().AsLowercaseString();
++  workspace.title = title.empty() ? "Workspace" : title;
++  workspace.container_id = container_id;
++  workspaces.push_back(std::move(workspace));
++  PersistWorkspaces(workspaces);
++}
++
++void HeliumWorkspaceController::RemoveWorkspace(
++    const std::string& workspace_id) {
++  if (workspace_id == kDefaultWorkspaceId) {
++    return;
++  }
++  auto workspaces = GetWorkspaces();
++  std::erase_if(workspaces, [&](const WorkspaceState& workspace) {
++    return workspace.id == workspace_id;
++  });
++  PersistWorkspaces(workspaces);
++  if (active_workspace_id_ == workspace_id) {
++    SetActiveWorkspace(kDefaultWorkspaceId);
++  }
++}
++
++void HeliumWorkspaceController::RenameWorkspace(
++    const std::string& workspace_id,
++    const std::string& title) {
++  auto workspaces = GetWorkspaces();
++  for (auto& workspace : workspaces) {
++    if (workspace.id == workspace_id) {
++      workspace.title = title;
++      break;
++    }
++  }
++  PersistWorkspaces(workspaces);
++}
++
++void HeliumWorkspaceController::SetActiveWorkspace(
++    const std::string& workspace_id) {
++  pref_service_->SetString(prefs::kHeliumActiveWorkspace, workspace_id);
++}
++
++void HeliumWorkspaceController::AssignContainer(
++    const std::string& workspace_id,
++    const std::string& container_id) {
++  auto workspaces = GetWorkspaces();
++  for (auto& workspace : workspaces) {
++    if (workspace.id == workspace_id) {
++      workspace.container_id = container_id;
++      break;
++    }
++  }
++  PersistWorkspaces(workspaces);
++}
++
++void HeliumWorkspaceController::PinTab(tabs::TabInterface* tab) {
++  const std::string tab_id = EnsureTabId(tab);
++  auto workspaces = GetWorkspaces();
++  for (auto& workspace : workspaces) {
++    if (workspace.id != active_workspace_id_) {
++      continue;
++    }
++    Erase(workspace.ephemeral_tab_ids, tab_id);
++    if (!Contains(workspace.pinned_tab_ids, tab_id)) {
++      workspace.pinned_tab_ids.push_back(tab_id);
++    }
++  }
++  PersistWorkspaces(workspaces);
++}
++
++void HeliumWorkspaceController::UnpinTab(tabs::TabInterface* tab) {
++  const std::string tab_id = EnsureTabId(tab);
++  auto workspaces = GetWorkspaces();
++  for (auto& workspace : workspaces) {
++    Erase(workspace.pinned_tab_ids, tab_id);
++    for (auto& folder : workspace.pinned_folders) {
++      Erase(folder.tab_ids, tab_id);
++    }
++  }
++  PersistWorkspaces(workspaces);
++}
++
++void HeliumWorkspaceController::AddPinnedFolder(const std::string& title) {
++  auto workspaces = GetWorkspaces();
++  for (auto& workspace : workspaces) {
++    if (workspace.id == active_workspace_id_) {
++      workspace.pinned_folders.push_back(WorkspacePinnedFolder{
++          base::Uuid::GenerateRandomV4().AsLowercaseString(),
++          title.empty() ? "Folder" : title,
++          {}});
++      break;
++    }
++  }
++  PersistWorkspaces(workspaces);
++}
++
++void HeliumWorkspaceController::MovePinnedTabToFolder(
++    tabs::TabInterface* tab,
++    const std::string& folder_id) {
++  const std::string tab_id = EnsureTabId(tab);
++  auto workspaces = GetWorkspaces();
++  for (auto& workspace : workspaces) {
++    if (workspace.id != active_workspace_id_) {
++      continue;
++    }
++    Erase(workspace.pinned_tab_ids, tab_id);
++    for (auto& folder : workspace.pinned_folders) {
++      if (folder.id == folder_id && !Contains(folder.tab_ids, tab_id)) {
++        folder.tab_ids.push_back(tab_id);
++      }
++    }
++  }
++  PersistWorkspaces(workspaces);
++}
++
++void HeliumWorkspaceController::RemovePinnedFolder(
++    const std::string& folder_id) {
++  auto workspaces = GetWorkspaces();
++  for (auto& workspace : workspaces) {
++    std::erase_if(workspace.pinned_folders, [&](const auto& folder) {
++      return folder.id == folder_id;
++    });
++  }
++  PersistWorkspaces(workspaces);
++}
++
++bool HeliumWorkspaceController::IsTabPinned(tabs::TabInterface* tab) const {
++  const std::string tab_id = EnsureTabId(tab);
++  const WorkspaceState workspace = GetActiveWorkspace();
++  if (Contains(workspace.pinned_tab_ids, tab_id)) {
++    return true;
++  }
++  for (const auto& folder : workspace.pinned_folders) {
++    if (Contains(folder.tab_ids, tab_id)) {
++      return true;
++    }
++  }
++  return false;
++}
++
++bool HeliumWorkspaceController::IsTabEphemeral(tabs::TabInterface* tab) const {
++  return !IsTabPinned(tab);
++}
++
++void HeliumWorkspaceController::TrackEphemeralTab(tabs::TabInterface* tab) {
++  if (!pref_service_->GetBoolean(prefs::kHeliumWorkspaceEphemeralTabs)) {
++    return;
++  }
++  const std::string tab_id = EnsureTabId(tab);
++  auto workspaces = GetWorkspaces();
++  for (auto& workspace : workspaces) {
++    if (workspace.id == active_workspace_id_ &&
++        !Contains(workspace.ephemeral_tab_ids, tab_id)) {
++      workspace.ephemeral_tab_ids.push_back(tab_id);
++      break;
++    }
++  }
++  PersistWorkspaces(workspaces);
++}
++
++void HeliumWorkspaceController::ClearEphemeralTabs() {
++  auto* model = tab_strip_model();
++  if (!model) {
++    return;
++  }
++  for (int index = model->count() - 1; index >= 0; --index) {
++    auto* tab = model->GetTabAtIndex(index);
++    if (tab && IsTabEphemeral(tab)) {
++      model->CloseWebContentsAt(index, TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
++    }
++  }
++}
++
++base::CallbackListSubscription
++HeliumWorkspaceController::RegisterOnStateChanged(
++    StateChangedCallback callback) {
++  return on_state_changed_callback_list_.Add(std::move(callback));
++}
++
++void HeliumWorkspaceController::EnsureDefaultWorkspace() {
++  auto workspaces = GetWorkspaces();
++  const bool has_default = std::ranges::any_of(workspaces, [](const auto& ws) {
++    return ws.id == kDefaultWorkspaceId;
++  });
++  if (has_default) {
++    return;
++  }
++  workspaces.push_back(
++      WorkspaceState{kDefaultWorkspaceId, kDefaultWorkspaceTitle});
++  PersistWorkspaces(workspaces);
++}
++
++void HeliumWorkspaceController::LoadActiveWorkspace() {
++  active_workspace_id_ =
++      pref_service_->GetString(prefs::kHeliumActiveWorkspace);
++  if (active_workspace_id_.empty()) {
++    active_workspace_id_ = kDefaultWorkspaceId;
++  }
++  NotifyStateChanged();
++}
++
++void HeliumWorkspaceController::PersistWorkspaces(
++    const std::vector<WorkspaceState>& workspaces) {
++  base::Value::Dict dict;
++  for (const auto& workspace : workspaces) {
++    dict.Set(workspace.id, WorkspaceToDict(workspace));
++  }
++  pref_service_->SetDict(prefs::kHeliumWorkspaces, std::move(dict));
++}
++
++void HeliumWorkspaceController::NotifyStateChanged() {
++  on_state_changed_callback_list_.Notify(this);
++}
++
++std::string HeliumWorkspaceController::EnsureTabId(
++    tabs::TabInterface* tab) const {
++  return tab ? tab->GetHandle().raw_value().ToString() : std::string();
++}
++
++TabStripModel* HeliumWorkspaceController::tab_strip_model() const {
++  return browser_window_ ? browser_window_->GetTabStripModel() : nullptr;
++}
++
++}  // namespace helium
+--- a/chrome/browser/ui/browser_window/public/browser_window_features.h
++++ b/chrome/browser/ui/browser_window/public/browser_window_features.h
+@@ -63,4 +63,7 @@ class FullscreenControlHost;
+ class HeliumLayoutStateController;
+ class HistoryClustersSidePanelCoordinator;
+ class HistorySidePanelCoordinator;
++namespace helium {
++class HeliumWorkspaceController;
++}
+ class IncognitoClearBrowsingDataDialogCoordinator;
+@@ -562,5 +566,7 @@ class BrowserWindowFeatures {
+ 
+   std::unique_ptr<HeliumLayoutStateController> helium_layout_state_controller_;
++  std::unique_ptr<helium::HeliumWorkspaceController>
++      helium_workspace_controller_;
+ 
+   std::unique_ptr<tabs::VerticalTabStripStateController>
+       vertical_tab_strip_state_controller_;
+--- a/chrome/browser/ui/browser_window/internal/browser_window_features.cc
++++ b/chrome/browser/ui/browser_window/internal/browser_window_features.cc
+@@ -69,5 +69,6 @@
+ #include "chrome/browser/ui/find_bar/find_bar.h"
+ #include "chrome/browser/ui/find_bar/find_bar_controller.h"
+ #include "chrome/browser/ui/helium/helium_layout_state_controller.h"
++#include "chrome/browser/ui/helium/workspaces/helium_workspace_controller.h"
+ #include "chrome/browser/ui/lens/lens_overlay_entry_point_controller.h"
+ #include "chrome/browser/ui/omnibox/ai_mode_page_action_controller.h"
+@@ -327,5 +328,9 @@ void BrowserWindowFeatures::Init(Browser
+         GetUserDataFactory().CreateInstance<HeliumLayoutStateController>(
+             *browser, browser, profile->GetPrefs());
+ 
++    helium_workspace_controller_ =
++        GetUserDataFactory().CreateInstance<helium::HeliumWorkspaceController>(
++            *browser, browser, profile->GetPrefs());
++
+     if (tabs::IsVerticalTabsFeatureEnabled()) {
+       Browser* raw_browser = browser->GetBrowserForMigrationOnly();
+--- a/chrome/app/settings_strings.grdp
++++ b/chrome/app/settings_strings.grdp
+@@ -300,6 +300,18 @@
+   <message name="IDS_SETTINGS_TAB_STRIP_RIGHT_ALIGN" desc="Label for the toggle that displays vertical tabs on the right side of the browser window.">
+     Show vertical tabs on right side
+   </message>
++  <message name="IDS_SETTINGS_WORKSPACE_SIDEBAR" desc="Label for the toggle that enables the Helium workspace sidebar.">
++    Workspace sidebar
++  </message>
++  <message name="IDS_SETTINGS_WORKSPACE_SIDEBAR_DESCRIPTION" desc="Description for the workspace sidebar toggle.">
++    Show Arc/Zen-style workspaces with pinned tabs, pinned folders, and ephemeral tabs
++  </message>
++  <message name="IDS_SETTINGS_EPHEMERAL_TABS" desc="Label for the toggle that treats non-pinned workspace tabs as ephemeral.">
++    Ephemeral workspace tabs
++  </message>
++  <message name="IDS_SETTINGS_EPHEMERAL_TABS_DESCRIPTION" desc="Description for ephemeral workspace tabs.">
++    Keep pinned tabs at the top and let the sidebar clear the rest
++  </message>
+   <message name="IDS_SETTINGS_SHOW_HOME_BUTTON" desc="Label for the checkbox which enables or disables showing the home button in the toolbar.">
+     Show home button
+   </message>
+--- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
++++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
+@@ -525,5 +525,9 @@ void AddAppearanceStrings(content::WebUI
+       {"browserLayoutCompact", IDS_SETTINGS_BROWSER_LAYOUT_COMPACT},
+       {"browserLayoutVertical", IDS_SETTINGS_BROWSER_LAYOUT_VERTICAL},
+       {"tabStripRightAlign", IDS_SETTINGS_TAB_STRIP_RIGHT_ALIGN},
++      {"workspaceSidebar", IDS_SETTINGS_WORKSPACE_SIDEBAR},
++      {"workspaceSidebarDescription", IDS_SETTINGS_WORKSPACE_SIDEBAR_DESCRIPTION},
++      {"ephemeralTabs", IDS_SETTINGS_EPHEMERAL_TABS},
++      {"ephemeralTabsDescription", IDS_SETTINGS_EPHEMERAL_TABS_DESCRIPTION},
+       {"showHomeButton", IDS_SETTINGS_SHOW_HOME_BUTTON},
+       {"showBookmarksBar", IDS_SETTINGS_SHOW_BOOKMARKS_BAR},
+--- a/chrome/browser/resources/settings/appearance_page/appearance_page.html
++++ b/chrome/browser/resources/settings/appearance_page/appearance_page.html
+@@ -111,6 +111,16 @@
+               label="$i18n{tabStripRightAlign}">
+           </settings-toggle-button>
+         </div>
++        <settings-toggle-button
++            pref="{{prefs.helium.workspaces.sidebar_enabled}}"
++            label="$i18n{workspaceSidebar}"
++            sub-label="$i18n{workspaceSidebarDescription}">
++        </settings-toggle-button>
++        <settings-toggle-button
++            pref="{{prefs.helium.workspaces.ephemeral_tabs}}"
++            label="$i18n{ephemeralTabs}"
++            sub-label="$i18n{ephemeralTabsDescription}">
++        </settings-toggle-button>
+ 
+         <div
+             class="hr"
+--- a/chrome/browser/ui/views/tabs/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/tabs/vertical_tab_strip_region_view.cc
+@@ -12,3 +12,4 @@
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/helium/workspaces/helium_workspace_controller.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+@@ -115,4 +116,10 @@ void VerticalTabStripRegionView::AddedToWidget() {
+   collapse_button_->SetCallback(base::BindRepeating(
+       &VerticalTabStripRegionView::OnCollapseButtonPressed,
+       base::Unretained(this)));
++  workspace_header_ = AddChildView(std::make_unique<HeliumWorkspaceHeaderView>(
++      browser_, base::BindRepeating(
++                    &VerticalTabStripRegionView::OnClearEphemeralTabsPressed,
++                    base::Unretained(this))));
++  workspace_header_->SetVisible(browser_->profile()->GetPrefs()->GetBoolean(
++      prefs::kHeliumWorkspaceSidebar));
+ }
+@@ -220,3 +226,17 @@ void VerticalTabStripRegionView::Layout(PassKey) {
+   gfx::Rect available_bounds = GetLocalBounds();
++  if (workspace_header_ && workspace_header_->GetVisible()) {
++    const int header_height =
++        workspace_header_->GetHeightForWidth(available_bounds.width());
++    workspace_header_->SetBoundsRect(
++        gfx::Rect(available_bounds.x(), available_bounds.y(),
++                  available_bounds.width(), header_height));
++    available_bounds.Inset(gfx::Insets::TLBR(header_height, 0, 0, 0));
++  }
+   tab_strip_->SetBoundsRect(available_bounds);
+ }
++
++void VerticalTabStripRegionView::OnClearEphemeralTabsPressed() {
++  if (auto* controller = helium::HeliumWorkspaceController::From(browser_)) {
++    controller->ClearEphemeralTabs();
++  }
++}
+--- a/chrome/browser/ui/views/tabs/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/tabs/vertical_tab_strip_region_view.h
+@@ -30,4 +30,6 @@ class VerticalTabStripRegionView : public views::View {
+  private:
++  void OnClearEphemeralTabsPressed();
+   raw_ptr<Browser> browser_;
++  raw_ptr<views::View> workspace_header_ = nullptr;
+   raw_ptr<views::View> tab_strip_ = nullptr;
+ };
+--- /dev/null
++++ b/chrome/browser/ui/views/tabs/helium_workspace_header_view.h
+@@ -0,0 +1,31 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_TABS_HELIUM_WORKSPACE_HEADER_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_TABS_HELIUM_WORKSPACE_HEADER_VIEW_H_
++
++#include "base/functional/callback_forward.h"
++#include "ui/views/view.h"
++
++class Browser;
++
++class HeliumWorkspaceHeaderView : public views::View {
++ public:
++  HeliumWorkspaceHeaderView(Browser* browser,
++                            base::RepeatingClosure clear_ephemeral_callback);
++  HeliumWorkspaceHeaderView(const HeliumWorkspaceHeaderView&) = delete;
++  HeliumWorkspaceHeaderView& operator=(const HeliumWorkspaceHeaderView&) =
++      delete;
++  ~HeliumWorkspaceHeaderView() override;
++
++  int GetHeightForWidth(int width) const override;
++
++ private:
++  void Rebuild();
++
++  raw_ptr<Browser> browser_;
++  base::RepeatingClosure clear_ephemeral_callback_;
++};
++
++#endif  // CHROME_BROWSER_UI_VIEWS_TABS_HELIUM_WORKSPACE_HEADER_VIEW_H_
+--- /dev/null
++++ b/chrome/browser/ui/views/tabs/helium_workspace_header_view.cc
+@@ -0,0 +1,45 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/views/tabs/helium_workspace_header_view.h"
++
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/helium/workspaces/helium_workspace_controller.h"
++#include "ui/base/l10n/l10n_util.h"
++#include "ui/views/controls/button/label_button.h"
++#include "ui/views/controls/label.h"
++#include "ui/views/layout/box_layout.h"
++
++HeliumWorkspaceHeaderView::HeliumWorkspaceHeaderView(
++    Browser* browser,
++    base::RepeatingClosure clear_ephemeral_callback)
++    : browser_(browser),
++      clear_ephemeral_callback_(std::move(clear_ephemeral_callback)) {
++  SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(8, 8), 6));
++  Rebuild();
++}
++
++HeliumWorkspaceHeaderView::~HeliumWorkspaceHeaderView() = default;
++
++int HeliumWorkspaceHeaderView::GetHeightForWidth(int width) const {
++  return GetPreferredSize().height();
++}
++
++void HeliumWorkspaceHeaderView::Rebuild() {
++  RemoveAllChildViews();
++  auto* controller = helium::HeliumWorkspaceController::From(browser_);
++  if (!controller) {
++    return;
++  }
++  const auto workspace = controller->GetActiveWorkspace();
++  AddChildView(std::make_unique<views::Label>(workspace.title));
++  auto* clear_button = AddChildView(std::make_unique<views::LabelButton>(
++      clear_ephemeral_callback_, u"Clear"));
++  clear_button->SetTooltipText(u"Clear ephemeral tabs");
++  for (const auto& folder : workspace.pinned_folders) {
++    AddChildView(std::make_unique<views::Label>(
++        base::UTF8ToUTF16(folder.title)));
++  }
++}
