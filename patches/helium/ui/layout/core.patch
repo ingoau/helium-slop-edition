@@ -68,7 +68,7 @@
  #include "chrome/browser/ui/tab_search_feature.h"
  #include "chrome/browser/ui/tabs/features.h"
  #include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
-@@ -45,11 +46,11 @@ void RegisterProfilePrefs(user_prefs::Pr
+@@ -45,11 +46,12 @@ void RegisterProfilePrefs(user_prefs::Pr
        prefs::kTabSearchPinnedToTabstripMigrationComplete2, false);
    registry->RegisterBooleanPref(prefs::kProjectsPanelPinnedToTabstrip, true);
    registry->RegisterBooleanPref(prefs::kEverythingMenuPinnedToTabstrip, true);
@@ -81,6 +81,7 @@
 +  registry->RegisterIntegerPref(prefs::kHeliumLayout,
 +                                std::to_underlying(HeliumLayoutType::kVertical));
 +  registry->RegisterBooleanPref(prefs::kHeliumVerticalRightAligned, false);
++  registry->RegisterBooleanPref(prefs::kHeliumForceVerticalTabs, true);
 +
    registry->RegisterBooleanPref(prefs::kVerticalTabsCollapsedState, false);
    registry->RegisterIntegerPref(prefs::kVerticalTabsUncollapsedWidth,
@@ -261,7 +262,7 @@
  }  // namespace tabs
 --- a/chrome/common/pref_names.h
 +++ b/chrome/common/pref_names.h
-@@ -833,6 +833,13 @@ inline constexpr char kTabCyclingMRU[] =
+@@ -833,6 +833,17 @@ inline constexpr char kTabCyclingMRU[] =
  // frame.
  inline constexpr char kHeliumRoundedFrame[] = "helium.browser.rounded_frame";
  
@@ -271,6 +272,10 @@
 +// A boolean pref set to true if vertical tabs should be on the right side.
 +inline constexpr char kHeliumVerticalRightAligned[] =
 +    "helium.browser.vertical_right_aligned";
++
++// A boolean pref set to true if Helium should always use vertical tabs.
++inline constexpr char kHeliumForceVerticalTabs[] =
++    "helium.browser.force_vertical_tabs";
 +
  // A boolean pref set to true if a Home button to open the Home pages should be
  // visible on the toolbar.
@@ -372,7 +377,7 @@
 +#endif  // CHROME_BROWSER_UI_HELIUM_HELIUM_LAYOUT_STATE_CONTROLLER_H_
 --- /dev/null
 +++ b/chrome/browser/ui/helium/helium_layout_state_controller.cc
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,84 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -430,6 +435,10 @@
 +
 +HeliumLayoutType HeliumLayoutStateController::GetBrowserLayout() const {
 +  int layout_value = pref_service_->GetInteger(prefs::kHeliumLayout);
++
++  if (pref_service_->GetBoolean(prefs::kHeliumForceVerticalTabs)) {
++    return HeliumLayoutType::kVertical;
++  }
 +
 +  if (!tabs::IsVerticalTabsFeatureEnabled() &&
 +      layout_value == std::to_underlying(HeliumLayoutType::kVertical)) {

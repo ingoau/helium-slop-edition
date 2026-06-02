@@ -1,6 +1,6 @@
 --- a/chrome/browser/extensions/api/settings_private/prefs_util.cc
 +++ b/chrome/browser/extensions/api/settings_private/prefs_util.cc
-@@ -204,6 +204,11 @@ const PrefsUtil::TypedPrefMap& PrefsUtil
+@@ -204,6 +204,13 @@ const PrefsUtil::TypedPrefMap& PrefsUtil
    }
    s_allowlist = new PrefsUtil::TypedPrefMap();
  
@@ -8,13 +8,15 @@
 +  (*s_allowlist)[::prefs::kHeliumLayout] = settings_api::PrefType::kNumber;
 +  (*s_allowlist)[::prefs::kHeliumVerticalRightAligned] =
 +      settings_api::PrefType::kBoolean;
++  (*s_allowlist)[::prefs::kHeliumForceVerticalTabs] =
++      settings_api::PrefType::kBoolean;
 +
    // Miscellaneous
    (*s_allowlist)[::embedder_support::kAlternateErrorPagesEnabled] =
        settings_api::PrefType::kBoolean;
 --- a/chrome/app/settings_strings.grdp
 +++ b/chrome/app/settings_strings.grdp
-@@ -279,6 +279,24 @@
+@@ -279,6 +279,27 @@
    <message name="IDS_SETTINGS_ROUNDED_FRAME" desc="Label for the toggle which enables or disables a rounded frame around web contents.">
      Show a rounded frame around web contents
    </message>
@@ -36,12 +38,15 @@
 +  <message name="IDS_SETTINGS_TAB_STRIP_RIGHT_ALIGN" desc="Label for the toggle that displays vertical tabs on the right side of the browser window.">
 +    Show vertical tabs on right side
 +  </message>
++  <message name="IDS_SETTINGS_FORCE_VERTICAL_TABS" desc="Label for the toggle that keeps vertical tabs enabled.">
++    Force vertical tabs
++  </message>
    <message name="IDS_SETTINGS_SHOW_HOME_BUTTON" desc="Label for the checkbox which enables or disables showing the home button in the toolbar.">
      Show home button
    </message>
 --- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
 +++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
-@@ -519,6 +519,12 @@ void AddAppearanceStrings(content::WebUI
+@@ -519,6 +519,13 @@ void AddAppearanceStrings(content::WebUI
        {"openNewTabNextToActive", IDS_SETTINGS_NEW_TAB_NEXT_TO_ACTIVE_BUTTON},
        {"cycleTabsInMRUOrder", IDS_SETTINGS_CYCLE_TABS_IN_MRU_ORDER},
        {"roundedFrame", IDS_SETTINGS_ROUNDED_FRAME},
@@ -51,6 +56,7 @@
 +      {"browserLayoutCompact", IDS_SETTINGS_BROWSER_LAYOUT_COMPACT},
 +      {"browserLayoutVertical", IDS_SETTINGS_BROWSER_LAYOUT_VERTICAL},
 +      {"tabStripRightAlign", IDS_SETTINGS_TAB_STRIP_RIGHT_ALIGN},
++      {"forceVerticalTabs", IDS_SETTINGS_FORCE_VERTICAL_TABS},
        {"showHomeButton", IDS_SETTINGS_SHOW_HOME_BUTTON},
        {"showBookmarksBar", IDS_SETTINGS_SHOW_BOOKMARKS_BAR},
        {"showTabSearchButton", IDS_SETTINGS_SHOW_TAB_SEARCH_BUTTON},
@@ -146,7 +152,7 @@
        return;
 --- a/chrome/browser/resources/settings/appearance_page/appearance_page.html
 +++ b/chrome/browser/resources/settings/appearance_page/appearance_page.html
-@@ -92,6 +92,25 @@
+@@ -92,6 +92,29 @@
              </cr-button>
            </template>
          </div>
@@ -162,6 +168,10 @@
 +          </settings-dropdown-menu>
 +        </div>
 +        <div class="list-frame hover-card-toggles">
++          <settings-toggle-button
++              pref="{{prefs.helium.browser.force_vertical_tabs}}"
++              label="$i18n{forceVerticalTabs}">
++          </settings-toggle-button>
 +          <settings-toggle-button
 +              hidden="[[!showVerticalSettings_]]"
 +              pref="{{prefs.helium.browser.vertical_right_aligned}}"
