@@ -1,7 +1,7 @@
 <div align="center">
     <img src="resources/branding/app_icon/raw.png"
-        title="Helium" alt="Helium logo" width="120" />
-    <h1>Helium</h1>
+        title="Helium Slop Edition" alt="Helium Slop Edition logo" width="120" />
+    <h1>Helium Slop Edition</h1>
     <p>
         The Chromium-based web browser made for people, with love.
         <br>
@@ -14,10 +14,10 @@
 
 ## Downloads
 > [!NOTE]
-> Helium is currently in beta, so unexpected issues may occur.
+> Helium Slop Edition is currently in beta, so unexpected issues may occur.
 > Please report them if they haven't already been reported.
 
-The easiest way to download Helium is [helium.computer](https://helium.computer/).
+The easiest way to download Helium Slop Edition is [helium.computer](https://helium.computer/).
 It'll pick a compatible binary for your platform automatically.
 
 The same releases can also be downloaded from source on GitHub:

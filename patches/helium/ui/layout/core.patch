@@ -79,7 +79,7 @@
 -  registry->RegisterBooleanPref(prefs::kVerticalTabsEnabledFirstTime, false);
 +
 +  registry->RegisterIntegerPref(prefs::kHeliumLayout,
-+                                std::to_underlying(HeliumLayoutType::kClassic));
++                                std::to_underlying(HeliumLayoutType::kVertical));
 +  registry->RegisterBooleanPref(prefs::kHeliumVerticalRightAligned, false);
 +
    registry->RegisterBooleanPref(prefs::kVerticalTabsCollapsedState, false);
@@ -433,7 +433,7 @@
 +
 +  if (!tabs::IsVerticalTabsFeatureEnabled() &&
 +      layout_value == std::to_underlying(HeliumLayoutType::kVertical)) {
-+    return HeliumLayoutType::kClassic;
++    return HeliumLayoutType::kVertical;
 +  }
 +
 +  if (layout_value < std::to_underlying(HeliumLayoutType::kClassic) ||
