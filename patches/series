@@ -311,3 +311,4 @@ helium/ui/fix-windows-ui-position.patch
 helium/ui/experiments/zen-mode-wiring.patch
 helium/ui/experiments/zen-caption-buttons.patch
 helium/ui/experiments/zen-mode.patch
+helium/ui/sidebar-toolbar.patch

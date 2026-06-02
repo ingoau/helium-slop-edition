@@ -1,0 +1,208 @@
+--- a/chrome/common/pref_names.h
++++ b/chrome/common/pref_names.h
+@@ -844,6 +844,11 @@ inline constexpr char kHeliumVerticalRightAligned[] =
+ inline constexpr char kHeliumVerticalRightAligned[] =
+     "helium.browser.vertical_right_aligned";
+ 
++// Boolean pref. When true, the address bar and toolbar actions live in the
++// vertical tab/sidebar column and the top toolbar row is removed.
++inline constexpr char kHeliumToolbarInSidebar[] =
++    "helium.browser.toolbar_in_sidebar";
++
+ // Dictionary storing Helium workspaces. Each workspace entry contains a stable
+ // id, display name, optional container id, pinned tab ids, pinned folders, and
+ // ephemeral tab ids.
+--- a/chrome/browser/ui/browser_ui_prefs.cc
++++ b/chrome/browser/ui/browser_ui_prefs.cc
+@@ -153,6 +153,7 @@ void RegisterBrowserUserPrefs(user_prefs
+   registry->RegisterBooleanPref(prefs::kShowExtensionsButton, true);
+   registry->RegisterBooleanPref(prefs::kShowMenuButton, true);
+   registry->RegisterBooleanPref(prefs::kShowMediaButton, true);
++  registry->RegisterBooleanPref(prefs::kHeliumToolbarInSidebar, false);
+   registry->RegisterDictionaryPref(prefs::kHeliumWorkspaces);
+   registry->RegisterStringPref(prefs::kHeliumActiveWorkspace, "default");
+   registry->RegisterBooleanPref(prefs::kHeliumWorkspaceSidebar, true);
+--- a/chrome/browser/extensions/api/settings_private/prefs_util.cc
++++ b/chrome/browser/extensions/api/settings_private/prefs_util.cc
+@@ -212,5 +212,7 @@ const PrefsUtil::TypedPrefMap& PrefsUtil
+       settings_api::PrefType::kBoolean;
+   (*s_allowlist)[::prefs::kHeliumVerticalRightAligned] =
+       settings_api::PrefType::kBoolean;
++  (*s_allowlist)[::prefs::kHeliumToolbarInSidebar] =
++      settings_api::PrefType::kBoolean;
+   (*s_allowlist)[::prefs::kHeliumWorkspaceSidebar] =
+       settings_api::PrefType::kBoolean;
+--- a/chrome/app/settings_strings.grdp
++++ b/chrome/app/settings_strings.grdp
+@@ -300,6 +300,12 @@
+   <message name="IDS_SETTINGS_TAB_STRIP_RIGHT_ALIGN" desc="Label for the toggle that displays vertical tabs on the right side of the browser window.">
+     Show vertical tabs on right side
+   </message>
++  <message name="IDS_SETTINGS_TOOLBAR_IN_SIDEBAR" desc="Label for the toggle that moves the toolbar into the sidebar.">
++    Put address bar in sidebar
++  </message>
++  <message name="IDS_SETTINGS_TOOLBAR_IN_SIDEBAR_DESCRIPTION" desc="Description for the sidebar toolbar setting.">
++    Move the address bar and toolbar buttons into vertical tabs and remove the top bar
++  </message>
+   <message name="IDS_SETTINGS_WORKSPACE_SIDEBAR" desc="Label for the toggle that enables the Helium workspace sidebar.">
+     Workspace sidebar
+   </message>
+--- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
++++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
+@@ -525,5 +525,7 @@ void AddAppearanceStrings(content::WebUI
+       {"browserLayoutCompact", IDS_SETTINGS_BROWSER_LAYOUT_COMPACT},
+       {"browserLayoutVertical", IDS_SETTINGS_BROWSER_LAYOUT_VERTICAL},
+       {"tabStripRightAlign", IDS_SETTINGS_TAB_STRIP_RIGHT_ALIGN},
++      {"toolbarInSidebar", IDS_SETTINGS_TOOLBAR_IN_SIDEBAR},
++      {"toolbarInSidebarDescription", IDS_SETTINGS_TOOLBAR_IN_SIDEBAR_DESCRIPTION},
+       {"workspaceSidebar", IDS_SETTINGS_WORKSPACE_SIDEBAR},
+       {"workspaceSidebarDescription", IDS_SETTINGS_WORKSPACE_SIDEBAR_DESCRIPTION},
+--- a/chrome/browser/resources/settings/appearance_page/appearance_page.html
++++ b/chrome/browser/resources/settings/appearance_page/appearance_page.html
+@@ -111,6 +111,12 @@
+               label="$i18n{tabStripRightAlign}">
+           </settings-toggle-button>
+         </div>
++        <settings-toggle-button
++            pref="{{prefs.helium.browser.toolbar_in_sidebar}}"
++            label="$i18n{toolbarInSidebar}"
++            sub-label="$i18n{toolbarInSidebarDescription}"
++            hidden="[[!showVerticalSettings_]]">
++        </settings-toggle-button>
+         <settings-toggle-button
+             pref="{{prefs.helium.workspaces.sidebar_enabled}}"
+             label="$i18n{workspaceSidebar}"
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -806,6 +806,8 @@ class BrowserView : public BrowserWindow,
+   bool IsZenModeTopChromePinned() const;
+   void ToggleZenModeSideChrome();
+   void ToggleZenModeTopChrome();
++  bool IsToolbarInSidebar() const;
++  void UpdateToolbarSidebarParent();
+ 
+   // This returns BrowserWidget except on fullscreen macOS where the toolbar is
+   // in a separate widget.
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -1153,4 +1153,8 @@ BrowserView::BrowserView(Browser* browse
+       prefs::kHeliumZenModeTopChromePinned,
+       base::BindRepeating(&BrowserView::OnZenModeTopChromePinnedPrefChanged,
+                           base::Unretained(this)));
++  registrar_.Add(
++      prefs::kHeliumToolbarInSidebar,
++      base::BindRepeating(&BrowserView::UpdateToolbarSidebarParent,
++                          base::Unretained(this)));
+   UpdateFullscreenAllowedFromPolicy(CanFullscreen());
+@@ -1644,5 +1648,8 @@ float BrowserView::GetTopChromeRevealRatio() const {
+   if (!zen_mode_enabled_) {
+     return 1.f;
+   }
++  if (IsToolbarInSidebar()) {
++    return 0.f;
++  }
+   return zen_top_chrome_animation_.GetCurrentValue();
+ }
+@@ -1658,3 +1665,6 @@ bool BrowserView::IsZenModeSideChromePinned() const {
+   return zen_mode_enabled_ && browser_->profile()->GetPrefs()->GetBoolean(
+                                   prefs::kHeliumZenModeSidebarPinned);
+ }
++bool BrowserView::IsToolbarInSidebar() const {
++  return browser_->profile()->GetPrefs()->GetBoolean(prefs::kHeliumToolbarInSidebar);
++}
+@@ -1768,6 +1778,7 @@ void BrowserView::OnToolbarTabStripStateChanged() {
+ 
+   UpdateZenModeState();
+   UpdateTabSearchBubbleHost();
++  UpdateToolbarSidebarParent();
+   UpdateZenCollapseButtonVisibility();
+   InvalidateLayout();
+ }
+@@ -2440,3 +2451,27 @@ void BrowserView::RevealZenModeTopChromeImmediately() {
+   zen_top_chrome_animation_.Reset(1);
+   InvalidateLayout();
+ }
++
++void BrowserView::UpdateToolbarSidebarParent() {
++  if (!toolbar_ || !top_container_) {
++    return;
++  }
++  const bool sidebar_toolbar =
++      IsToolbarInSidebar() && ShouldDrawVerticalTabStrip() &&
++      vertical_tab_strip_region_view_;
++  views::View* target_parent =
++      sidebar_toolbar ? vertical_tab_strip_region_view_ : top_container_;
++  if (toolbar_->parent() == target_parent) {
++    return;
++  }
++  toolbar_->parent()->RemoveChildViewT(toolbar_.get());
++  target_parent->AddChildViewAt(toolbar_.get(), 0);
++  toolbar_->UpdateToolbarLayout();
++  if (sidebar_toolbar) {
++    browser_->profile()->GetPrefs()->SetBoolean(
++        prefs::kHeliumZenModeSidebarPinned, true);
++    browser_->profile()->GetPrefs()->SetBoolean(
++        prefs::kHeliumZenModeTopChromePinned, false);
++  }
++  InvalidateLayout();
++}
+--- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h
++++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h
+@@ -46,5 +46,6 @@ class BrowserViewLayoutDelegate {
+   virtual float GetTopChromeRevealRatio() const { return 1.f; }
+   virtual float GetSideChromeRevealRatio() const { return 1.f; }
+   virtual bool IsZenModeTopChromePinned() const { return false; }
++  virtual bool IsToolbarInSidebar() const { return false; }
+   virtual bool IsZenModeSideChromePinned() const { return false; }
+ };
+--- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.h
++++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.h
+@@ -43,5 +43,6 @@ class BrowserViewLayoutDelegateImpl : public BrowserViewLayoutDelegate {
+   float GetTopChromeRevealRatio() const override;
+   float GetSideChromeRevealRatio() const override;
+   bool IsZenModeTopChromePinned() const override;
++  bool IsToolbarInSidebar() const override;
+   bool IsZenModeSideChromePinned() const override;
+ };
+--- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
+@@ -88,5 +88,8 @@ bool BrowserViewLayoutDelegateImpl::IsZenModeTopChromePinned() const {
+   return browser_view_->IsZenModeTopChromePinned();
+ }
++bool BrowserViewLayoutDelegateImpl::IsToolbarInSidebar() const {
++  return browser_view_->IsToolbarInSidebar();
++}
+ 
+ bool BrowserViewLayoutDelegateImpl::IsZenModeSideChromePinned() const {
+   return browser_view_->IsZenModeSideChromePinned();
+--- a/chrome/browser/ui/views/frame/browser_view_layout.cc
++++ b/chrome/browser/ui/views/frame/browser_view_layout.cc
+@@ -1067,5 +1067,6 @@ ZenModeLayoutState ComputeZenModeLayoutState(
+   state.top_chrome_ratio = delegate.GetTopChromeRevealRatio();
+   state.side_chrome_ratio = delegate.GetSideChromeRevealRatio();
+   state.top_chrome_pinned = delegate.IsZenModeTopChromePinned();
++  state.toolbar_in_sidebar = delegate.IsToolbarInSidebar();
+   state.side_chrome_pinned = delegate.IsZenModeSideChromePinned();
+   return state;
+@@ -1222,7 +1223,12 @@ void BrowserViewLayout::CalculateBrowserLayout(
+       auto bookmarks_child = top_container_children.find(views().bookmark_bar);
+       if (bookmarks_child != top_container_children.end() &&
+           bookmarks_child->second.bounds.IsEmpty()) {
+         top_container_children.erase(bookmarks_child);
+       }
++      if (zen.toolbar_in_sidebar) {
++        top_container_layout.children.erase(views().toolbar);
++        top_container_layout.bounds.set_height(0);
++        params.SetTop(0);
++      }
+       if (const auto* toolbar_layout =
+               top_container_layout.GetLayoutFor(views().toolbar);
+--- a/chrome/browser/ui/views/frame/browser_view_layout.h
++++ b/chrome/browser/ui/views/frame/browser_view_layout.h
+@@ -206,5 +206,6 @@ struct ZenModeLayoutState {
+   float top_chrome_ratio = 1.f;
+   float side_chrome_ratio = 1.f;
+   bool top_chrome_pinned = false;
++  bool toolbar_in_sidebar = false;
+   bool side_chrome_pinned = false;
+ };
