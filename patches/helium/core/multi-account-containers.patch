@@ -1,0 +1,452 @@
+--- a/chrome/common/pref_names.h
++++ b/chrome/common/pref_names.h
+@@ -858,6 +858,21 @@ inline constexpr char kHeliumWorkspaceEphemeralTabs[] =
+ inline constexpr char kHeliumWorkspaceEphemeralTabs[] =
+     "helium.workspaces.ephemeral_tabs";
+ 
++// Dictionary storing multi-account containers. Containers have a stable id,
++// display name, color, icon, and storage partition name.
++inline constexpr char kHeliumContainers[] = "helium.containers";
++
++// String id of the default container used when no workspace or tab override is
++// present. Empty means the regular profile storage partition.
++inline constexpr char kHeliumDefaultContainer[] = "helium.containers.default";
++
++// Dictionary mapping tab ids to container ids for explicit per-tab overrides.
++inline constexpr char kHeliumTabContainers[] = "helium.containers.tabs";
++
++// Boolean pref enabling Helium multi-account containers.
++inline constexpr char kHeliumContainersEnabled[] =
++    "helium.containers.enabled";
++
+ // A boolean pref set to true if a Home button to open the Home pages should be
+ // visible on the toolbar.
+ inline constexpr char kShowHomeButton[] = "browser.show_home_button";
+--- a/chrome/browser/ui/browser_ui_prefs.cc
++++ b/chrome/browser/ui/browser_ui_prefs.cc
+@@ -153,6 +153,10 @@ void RegisterBrowserUserPrefs(user_prefs
+   registry->RegisterStringPref(prefs::kHeliumActiveWorkspace, "default");
+   registry->RegisterBooleanPref(prefs::kHeliumWorkspaceSidebar, true);
+   registry->RegisterBooleanPref(prefs::kHeliumWorkspaceEphemeralTabs, true);
++  registry->RegisterDictionaryPref(prefs::kHeliumContainers);
++  registry->RegisterStringPref(prefs::kHeliumDefaultContainer, "");
++  registry->RegisterDictionaryPref(prefs::kHeliumTabContainers);
++  registry->RegisterBooleanPref(prefs::kHeliumContainersEnabled, true);
+ 
+   registry->RegisterInt64Pref(prefs::kDefaultBrowserInfobarLastDeclined, 0);
+   registry->RegisterBooleanPref(prefs::kWebAppCreateOnDesktop, true);
+--- a/chrome/browser/extensions/api/settings_private/prefs_util.cc
++++ b/chrome/browser/extensions/api/settings_private/prefs_util.cc
+@@ -218,6 +218,10 @@ const PrefsUtil::TypedPrefMap& PrefsUtil
+       settings_api::PrefType::kBoolean;
+   (*s_allowlist)[::prefs::kHeliumActiveWorkspace] =
+       settings_api::PrefType::kString;
++  (*s_allowlist)[::prefs::kHeliumContainersEnabled] =
++      settings_api::PrefType::kBoolean;
++  (*s_allowlist)[::prefs::kHeliumDefaultContainer] =
++      settings_api::PrefType::kString;
+ 
+   // Miscellaneous
+   (*s_allowlist)[::embedder_support::kAlternateErrorPagesEnabled] =
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -61,6 +61,8 @@ static_library("ui") {
+     "helium/helium_layout_state_controller.h",
+     "helium/workspaces/helium_workspace_controller.cc",
+     "helium/workspaces/helium_workspace_controller.h",
++    "helium/containers/helium_container_service.cc",
++    "helium/containers/helium_container_service.h",
+     "idle_bubble.h",
+     "incognito_allowed_url.cc",
+     "incognito_allowed_url.h",
+--- /dev/null
++++ b/chrome/browser/ui/helium/containers/helium_container_service.h
+@@ -0,0 +1,74 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_HELIUM_CONTAINERS_HELIUM_CONTAINER_SERVICE_H_
++#define CHROME_BROWSER_UI_HELIUM_CONTAINERS_HELIUM_CONTAINER_SERVICE_H_
++
++#include <string>
++#include <vector>
++
++#include "base/memory/raw_ptr.h"
++#include "components/prefs/pref_change_registrar.h"
++#include "content/public/browser/storage_partition_config.h"
++#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
++
++class BrowserWindowInterface;
++class PrefService;
++class Profile;
++
++namespace tabs {
++class TabInterface;
++}
++
++namespace helium {
++
++struct ContainerState {
++  std::string id;
++  std::string name;
++  std::string color;
++  std::string icon;
++  std::string partition_name;
++};
++
++class HeliumContainerService {
++ public:
++  DECLARE_USER_DATA(HeliumContainerService);
++
++  HeliumContainerService(BrowserWindowInterface* browser_window,
++                         Profile* profile,
++                         PrefService* pref_service);
++  HeliumContainerService(const HeliumContainerService&) = delete;
++  HeliumContainerService& operator=(const HeliumContainerService&) = delete;
++  ~HeliumContainerService();
++
++  static HeliumContainerService* From(BrowserWindowInterface* browser_window);
++
++  std::vector<ContainerState> GetContainers() const;
++  ContainerState GetContainer(const std::string& container_id) const;
++  void AddContainer(const std::string& name,
++                    const std::string& color,
++                    const std::string& icon);
++  void RemoveContainer(const std::string& container_id);
++  void AssignTab(tabs::TabInterface* tab, const std::string& container_id);
++  std::string GetContainerForTab(tabs::TabInterface* tab) const;
++  std::string GetContainerForNewTab() const;
++
++  content::StoragePartitionConfig GetStoragePartitionConfigForContainer(
++      const std::string& container_id) const;
++
++ private:
++  void EnsureDefaultContainers();
++  void PersistContainers(const std::vector<ContainerState>& containers);
++  std::string TabId(tabs::TabInterface* tab) const;
++
++  raw_ptr<BrowserWindowInterface> browser_window_;
++  raw_ptr<Profile> profile_;
++  raw_ptr<PrefService> pref_service_;
++  PrefChangeRegistrar pref_change_registrar_;
++  ui::ScopedUnownedUserData<HeliumContainerService> scoped_unowned_user_data_;
++};
++
++}  // namespace helium
++
++#endif  // CHROME_BROWSER_UI_HELIUM_CONTAINERS_HELIUM_CONTAINER_SERVICE_H_
+--- /dev/null
++++ b/chrome/browser/ui/helium/containers/helium_container_service.cc
+@@ -0,0 +1,210 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/helium/containers/helium_container_service.h"
++
++#include <algorithm>
++
++#include "base/uuid.h"
++#include "base/values.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/helium/workspaces/helium_workspace_controller.h"
++#include "chrome/common/pref_names.h"
++#include "components/prefs/pref_service.h"
++
++namespace helium {
++
++namespace {
++
++constexpr char kIdKey[] = "id";
++constexpr char kNameKey[] = "name";
++constexpr char kColorKey[] = "color";
++constexpr char kIconKey[] = "icon";
++constexpr char kPartitionNameKey[] = "partition_name";
++
++ContainerState ContainerFromDict(const base::Value::Dict& dict) {
++  ContainerState container;
++  container.id = dict.FindString(kIdKey).value_or(std::string());
++  container.name = dict.FindString(kNameKey).value_or(std::string());
++  container.color = dict.FindString(kColorKey).value_or("#5f6368");
++  container.icon = dict.FindString(kIconKey).value_or("circle");
++  container.partition_name =
++      dict.FindString(kPartitionNameKey).value_or(container.id);
++  return container;
++}
++
++base::Value::Dict ContainerToDict(const ContainerState& container) {
++  base::Value::Dict dict;
++  dict.Set(kIdKey, container.id);
++  dict.Set(kNameKey, container.name);
++  dict.Set(kColorKey, container.color);
++  dict.Set(kIconKey, container.icon);
++  dict.Set(kPartitionNameKey, container.partition_name);
++  return dict;
++}
++
++}  // namespace
++
++DEFINE_USER_DATA(HeliumContainerService);
++
++HeliumContainerService::HeliumContainerService(
++    BrowserWindowInterface* browser_window,
++    Profile* profile,
++    PrefService* pref_service)
++    : browser_window_(browser_window),
++      profile_(profile),
++      pref_service_(pref_service),
++      scoped_unowned_user_data_(browser_window->GetUnownedUserDataHost(),
++                                *this) {
++  EnsureDefaultContainers();
++}
++
++HeliumContainerService::~HeliumContainerService() = default;
++
++HeliumContainerService* HeliumContainerService::From(
++    BrowserWindowInterface* browser_window) {
++  return Get(browser_window->GetUnownedUserDataHost());
++}
++
++std::vector<ContainerState> HeliumContainerService::GetContainers() const {
++  std::vector<ContainerState> containers;
++  const base::Value::Dict& dict =
++      pref_service_->GetDict(prefs::kHeliumContainers);
++  for (const auto [id, value] : dict) {
++    if (!value.is_dict()) {
++      continue;
++    }
++    ContainerState container = ContainerFromDict(value.GetDict());
++    if (container.id.empty()) {
++      container.id = id;
++    }
++    containers.push_back(std::move(container));
++  }
++  std::ranges::sort(containers, {}, &ContainerState::name);
++  return containers;
++}
++
++ContainerState HeliumContainerService::GetContainer(
++    const std::string& container_id) const {
++  for (const auto& container : GetContainers()) {
++    if (container.id == container_id) {
++      return container;
++    }
++  }
++  return ContainerState();
++}
++
++void HeliumContainerService::AddContainer(const std::string& name,
++                                          const std::string& color,
++                                          const std::string& icon) {
++  auto containers = GetContainers();
++  ContainerState container;
++  container.id = base::Uuid::GenerateRandomV4().AsLowercaseString();
++  container.name = name.empty() ? "Container" : name;
++  container.color = color.empty() ? "#5f6368" : color;
++  container.icon = icon.empty() ? "circle" : icon;
++  container.partition_name = "helium-container-" + container.id;
++  containers.push_back(std::move(container));
++  PersistContainers(containers);
++}
++
++void HeliumContainerService::RemoveContainer(
++    const std::string& container_id) {
++  auto containers = GetContainers();
++  std::erase_if(containers, [&](const ContainerState& container) {
++    return container.id == container_id;
++  });
++  PersistContainers(containers);
++}
++
++void HeliumContainerService::AssignTab(tabs::TabInterface* tab,
++                                       const std::string& container_id) {
++  base::Value::Dict tab_map =
++      pref_service_->GetDict(prefs::kHeliumTabContainers).Clone();
++  const std::string id = TabId(tab);
++  if (container_id.empty()) {
++    tab_map.Remove(id);
++  } else {
++    tab_map.Set(id, container_id);
++  }
++  pref_service_->SetDict(prefs::kHeliumTabContainers, std::move(tab_map));
++}
++
++std::string HeliumContainerService::GetContainerForTab(
++    tabs::TabInterface* tab) const {
++  if (!pref_service_->GetBoolean(prefs::kHeliumContainersEnabled)) {
++    return std::string();
++  }
++  const base::Value::Dict& tab_map =
++      pref_service_->GetDict(prefs::kHeliumTabContainers);
++  if (const auto* container = tab_map.FindString(TabId(tab))) {
++    return *container;
++  }
++  if (auto* workspace_controller =
++          HeliumWorkspaceController::From(browser_window_)) {
++    std::string workspace_container =
++        workspace_controller->GetActiveWorkspace().container_id;
++    if (!workspace_container.empty()) {
++      return workspace_container;
++    }
++  }
++  return pref_service_->GetString(prefs::kHeliumDefaultContainer);
++}
++
++std::string HeliumContainerService::GetContainerForNewTab() const {
++  if (!pref_service_->GetBoolean(prefs::kHeliumContainersEnabled)) {
++    return std::string();
++  }
++  if (auto* workspace_controller =
++          HeliumWorkspaceController::From(browser_window_)) {
++    std::string workspace_container =
++        workspace_controller->GetActiveWorkspace().container_id;
++    if (!workspace_container.empty()) {
++      return workspace_container;
++    }
++  }
++  return pref_service_->GetString(prefs::kHeliumDefaultContainer);
++}
++
++content::StoragePartitionConfig
++HeliumContainerService::GetStoragePartitionConfigForContainer(
++    const std::string& container_id) const {
++  if (container_id.empty()) {
++    return content::StoragePartitionConfig::CreateDefault(profile_);
++  }
++  const ContainerState container = GetContainer(container_id);
++  if (container.id.empty()) {
++    return content::StoragePartitionConfig::CreateDefault(profile_);
++  }
++  return content::StoragePartitionConfig::Create(profile_, container.partition_name,
++                                                /*in_memory=*/false);
++}
++
++void HeliumContainerService::EnsureDefaultContainers() {
++  if (!GetContainers().empty()) {
++    return;
++  }
++  std::vector<ContainerState> containers = {
++      {"personal", "Personal", "#1a73e8", "person", "helium-container-personal"},
++      {"work", "Work", "#188038", "briefcase", "helium-container-work"},
++      {"banking", "Banking", "#c5221f", "lock", "helium-container-banking"},
++  };
++  PersistContainers(containers);
++}
++
++void HeliumContainerService::PersistContainers(
++    const std::vector<ContainerState>& containers) {
++  base::Value::Dict dict;
++  for (const auto& container : containers) {
++    dict.Set(container.id, ContainerToDict(container));
++  }
++  pref_service_->SetDict(prefs::kHeliumContainers, std::move(dict));
++}
++
++std::string HeliumContainerService::TabId(tabs::TabInterface* tab) const {
++  return tab ? tab->GetHandle().raw_value().ToString() : std::string();
++}
++
++}  // namespace helium
+--- a/chrome/browser/ui/browser_window/public/browser_window_features.h
++++ b/chrome/browser/ui/browser_window/public/browser_window_features.h
+@@ -66,2 +66,3 @@ namespace helium {
+ class HeliumWorkspaceController;
++class HeliumContainerService;
+ }
+@@ -568,5 +569,7 @@ class BrowserWindowFeatures {
+   std::unique_ptr<helium::HeliumWorkspaceController>
+       helium_workspace_controller_;
++  std::unique_ptr<helium::HeliumContainerService>
++      helium_container_service_;
+ 
+   std::unique_ptr<tabs::VerticalTabStripStateController>
+       vertical_tab_strip_state_controller_;
+--- a/chrome/browser/ui/browser_window/internal/browser_window_features.cc
++++ b/chrome/browser/ui/browser_window/internal/browser_window_features.cc
+@@ -69,4 +69,5 @@
+ #include "chrome/browser/ui/find_bar/find_bar_controller.h"
+ #include "chrome/browser/ui/helium/helium_layout_state_controller.h"
++#include "chrome/browser/ui/helium/containers/helium_container_service.h"
+ #include "chrome/browser/ui/helium/workspaces/helium_workspace_controller.h"
+ #include "chrome/browser/ui/lens/lens_overlay_entry_point_controller.h"
+@@ -332,5 +333,9 @@ void BrowserWindowFeatures::Init(Browser
+         GetUserDataFactory().CreateInstance<helium::HeliumWorkspaceController>(
+             *browser, browser, profile->GetPrefs());
+ 
++    helium_container_service_ =
++        GetUserDataFactory().CreateInstance<helium::HeliumContainerService>(
++            *browser, browser, profile, profile->GetPrefs());
++
+     if (tabs::IsVerticalTabsFeatureEnabled()) {
+       Browser* raw_browser = browser->GetBrowserForMigrationOnly();
+--- a/chrome/browser/ui/browser_navigator.cc
++++ b/chrome/browser/ui/browser_navigator.cc
+@@ -60,3 +60,4 @@
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/helium/containers/helium_container_service.h"
+ #include "chrome/browser/ui/tab_helpers.h"
+ #include "chrome/browser/ui/tab_ui_helper.h"
+@@ -724,6 +725,14 @@ NavigateResult Navigate(NavigateParams* params) {
+   if (!params->initiating_profile) {
+     params->initiating_profile = params->browser->profile();
+   }
++  if (params->browser) {
++    if (auto* containers =
++            helium::HeliumContainerService::From(params->browser)) {
++      params->storage_partition_config =
++          containers->GetStoragePartitionConfigForContainer(
++              containers->GetContainerForNewTab());
++    }
++  }
+ 
+   if (params->disposition == WindowOpenDisposition::NEW_POPUP &&
+       !params->user_gesture) {
+--- a/chrome/app/settings_strings.grdp
++++ b/chrome/app/settings_strings.grdp
+@@ -312,6 +312,15 @@
+   <message name="IDS_SETTINGS_EPHEMERAL_TABS_DESCRIPTION" desc="Description for ephemeral workspace tabs.">
+     Keep pinned tabs at the top and let the sidebar clear the rest
+   </message>
++  <message name="IDS_SETTINGS_CONTAINERS_ENABLED" desc="Label for enabling multi-account containers.">
++    Multi-account containers
++  </message>
++  <message name="IDS_SETTINGS_CONTAINERS_ENABLED_DESCRIPTION" desc="Description for multi-account containers.">
++    Isolate cookies and site data per tab or workspace
++  </message>
++  <message name="IDS_SETTINGS_DEFAULT_CONTAINER" desc="Label for the default container selector.">
++    Default container
++  </message>
+   <message name="IDS_SETTINGS_SHOW_HOME_BUTTON" desc="Label for the checkbox which enables or disables showing the home button in the toolbar.">
+     Show home button
+   </message>
+--- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
++++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
+@@ -529,5 +529,8 @@ void AddAppearanceStrings(content::WebUI
+       {"workspaceSidebarDescription", IDS_SETTINGS_WORKSPACE_SIDEBAR_DESCRIPTION},
+       {"ephemeralTabs", IDS_SETTINGS_EPHEMERAL_TABS},
+       {"ephemeralTabsDescription", IDS_SETTINGS_EPHEMERAL_TABS_DESCRIPTION},
++      {"containersEnabled", IDS_SETTINGS_CONTAINERS_ENABLED},
++      {"containersEnabledDescription", IDS_SETTINGS_CONTAINERS_ENABLED_DESCRIPTION},
++      {"defaultContainer", IDS_SETTINGS_DEFAULT_CONTAINER},
+       {"showHomeButton", IDS_SETTINGS_SHOW_HOME_BUTTON},
+       {"showBookmarksBar", IDS_SETTINGS_SHOW_BOOKMARKS_BAR},
+--- a/chrome/browser/resources/settings/appearance_page/appearance_page.html
++++ b/chrome/browser/resources/settings/appearance_page/appearance_page.html
+@@ -123,6 +123,15 @@
+             label="$i18n{ephemeralTabs}"
+             sub-label="$i18n{ephemeralTabsDescription}">
+         </settings-toggle-button>
++        <settings-toggle-button
++            pref="{{prefs.helium.containers.enabled}}"
++            label="$i18n{containersEnabled}"
++            sub-label="$i18n{containersEnabledDescription}">
++        </settings-toggle-button>
++        <settings-input-row
++            pref="{{prefs.helium.containers.default}}"
++            label="$i18n{defaultContainer}">
++        </settings-input-row>
+ 
+         <div
+             class="hr"
